@@ -125,6 +125,9 @@ public enum ToolEnvironment {
             }
         }
         env["USER"] = env["USER"] ?? NSUserName()
+        // This native build never serves HTTPS. Avoid .NET's unrelated first-run development
+        // certificate creation, which can wait for Keychain interaction in a background GUI build.
+        env["DOTNET_GENERATE_ASPNET_CERTIFICATE"] = "false"
         return env
     }
     public static func executable(named name: String) -> URL? {
