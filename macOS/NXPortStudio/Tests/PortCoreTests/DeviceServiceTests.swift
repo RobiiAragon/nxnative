@@ -74,8 +74,7 @@ final class DeviceServiceTests: XCTestCase {
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporary) }
         let project = temporary.appendingPathComponent("Game files/xcode/DmIOS.xcodeproj")
-        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
-        try Data().write(to: project.appendingPathComponent("project.pbxproj"))
+        try writeProject(in: project, identifier: "org.nxnative.010015100b514000")
         // build_ipa.sh replaces '/' and ':' in the display name and adds the title ID.
         let generatedScheme = "Test__ Adventure (010015100B514000)"
         try writeScheme(named: generatedScheme, in: project)
@@ -88,6 +87,7 @@ final class DeviceServiceTests: XCTestCase {
         XCTAssertTrue(plan.buildCommand.arguments.contains("-allowProvisioningUpdates"))
         XCTAssertTrue(plan.buildCommand.arguments.contains("platform=iOS,id=phone-udid"))
         XCTAssertTrue(plan.buildCommand.arguments.contains(project.path))
+        XCTAssertTrue(plan.buildCommand.arguments.contains("PRODUCT_BUNDLE_IDENTIFIER=org.nxnative.abcdefgh12.010015100b514000"))
         let schemeFlag = try XCTUnwrap(plan.buildCommand.arguments.firstIndex(of: "-scheme"))
         XCTAssertEqual(plan.buildCommand.arguments[schemeFlag + 1], generatedScheme)
         XCTAssertTrue(plan.installCommand.arguments.contains("core-device"))
@@ -96,6 +96,52 @@ final class DeviceServiceTests: XCTestCase {
         XCTAssertEqual(plan.signedApplicationURL.lastPathComponent, "DmIOS.app")
         XCTAssertThrowsError(try DeviceService.deploymentPlan(projectURL: project, teamID: "bad\nsetting", device: phone,
             derivedDataURL: temporary))
+    }
+
+    func testBundleIdentifierNamespacePreservesCustomIDsAndOtherTargets() throws {
+        let project = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("DmIOS.xcodeproj")
+        defer { try? FileManager.default.removeItem(at: project.deletingLastPathComponent()) }
+        try writeProject(in: project, identifier: "org.nxnative.0100152000022000")
+        XCTAssertEqual(DeviceService.defaultBundleIdentifierOverride(in: project, teamID: "9X76Y99YGD"),
+                       "org.nxnative.9x76y99ygd.0100152000022000")
+        try writeProject(in: project, identifier: "com.example.my-mario-kart")
+        XCTAssertNil(DeviceService.defaultBundleIdentifierOverride(in: project, teamID: "9X76Y99YGD"))
+        try writeProject(in: project, identifier: "org.nxnative.9x76y99ygd.0100152000022000")
+        XCTAssertNil(DeviceService.defaultBundleIdentifierOverride(in: project, teamID: "9X76Y99YGD"))
+        try writeProject(in: project, identifier: "org.nxnative.0100152000022000", includesOtherTarget: true)
+        XCTAssertNil(DeviceService.defaultBundleIdentifierOverride(in: project, teamID: "9X76Y99YGD"))
+        try writeProject(in: project, identifier: "org.nxnative.0100152000022000", infoIdentifier: "com.example.explicit")
+        XCTAssertNil(DeviceService.defaultBundleIdentifierOverride(in: project, teamID: "9X76Y99YGD"))
+    }
+
+    private func writeProject(in project: URL, identifier: String, includesOtherTarget: Bool = false,
+                              infoIdentifier: String = "$(PRODUCT_BUNDLE_IDENTIFIER)") throws {
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let pbxproj = """
+        // !$*UTF8*$!
+        {
+          archiveVersion = 1;
+          objectVersion = 77;
+          objects = {
+            ROOT = { isa = PBXProject; targets = (APP, \(includesOtherTarget ? "OTHER," : "")); };
+            APP = { isa = PBXNativeTarget; name = DmIOS; productType = "com.apple.product-type.application"; buildConfigurationList = CONFIGURATIONS; };
+            OTHER = { isa = PBXNativeTarget; name = AnotherApp; };
+            CONFIGURATIONS = { isa = XCConfigurationList; buildConfigurations = (RELEASE,); };
+            RELEASE = { isa = XCBuildConfiguration; name = Release; buildSettings = {
+              PRODUCT_BUNDLE_IDENTIFIER = "\(identifier)";
+              INFOPLIST_FILE = Gen/Info.plist;
+            }; };
+          };
+          rootObject = ROOT;
+        }
+        """
+        try Data(pbxproj.utf8).write(to: project.appendingPathComponent("project.pbxproj"))
+        let info = project.deletingLastPathComponent().appendingPathComponent("Gen/Info.plist")
+        try FileManager.default.createDirectory(at: info.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let bytes = try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": infoIdentifier],
+                                                       format: .xml, options: 0)
+        try bytes.write(to: info)
     }
 
     func testPreparedSchemeRejectsMissingOrAmbiguousGameSchemes() throws {

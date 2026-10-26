@@ -96,20 +96,58 @@ public enum DeviceService {
         let scheme = try preparedScheme(in: projectURL)
         let products = derivedDataURL.appendingPathComponent("Build/Products/Release-iphoneos", isDirectory: true)
         let signedApp = products.appendingPathComponent("DmIOS.app", isDirectory: true)
-        let build = ProcessCommand(executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: [
+        var buildArguments = [
             "xcodebuild", "-project", projectURL.path, "-scheme", scheme, "-configuration", "Release",
             "-destination", "platform=iOS,id=\(device.udid)", "-derivedDataPath", derivedDataURL.path,
             "-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration",
             "DEVELOPMENT_TEAM=\(team)", "CODE_SIGN_STYLE=Automatic", "CODE_SIGN_IDENTITY=Apple Development",
             "CODE_SIGNING_ALLOWED=YES", "CODE_SIGNING_REQUIRED=YES", "DM_COPY_GAME_RESOURCES=YES",
-            "CONFIGURATION_BUILD_DIR=\(products.path)", "build"
-        ], workingDirectoryURL: projectURL.deletingLastPathComponent(), environment: ToolEnvironment.values,
+            "CONFIGURATION_BUILD_DIR=\(products.path)"
+        ]
+        if let identifier = defaultBundleIdentifierOverride(in: projectURL, teamID: team) {
+            buildArguments.append("PRODUCT_BUNDLE_IDENTIFIER=\(identifier)")
+        }
+        buildArguments.append("build")
+        let build = ProcessCommand(executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: buildArguments,
+            workingDirectoryURL: projectURL.deletingLastPathComponent(), environment: ToolEnvironment.values,
             redactedDescription: "xcodebuild DmIOS — sign for the selected device with the configured Xcode team")
         let install = ProcessCommand(executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: [
             "devicectl", "device", "install", "app", "--device", device.id, signedApp.path
         ], environment: ToolEnvironment.values,
             redactedDescription: "xcrun devicectl device install app — selected device")
         return DeploymentPlan(buildCommand: build, installCommand: install, signedApplicationURL: signedApp)
+    }
+
+    /// Give nxnative's shared default ID a stable per-team namespace. Custom IDs,
+    /// modified Info.plists and multi-target projects retain their existing settings.
+    static func defaultBundleIdentifierOverride(in projectURL: URL, teamID: String) -> String? {
+        guard teamID.range(of: "^[A-Z0-9]{10}$", options: .regularExpression) != nil,
+              let data = try? Data(contentsOf: projectURL.appendingPathComponent("project.pbxproj")),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let objects = plist["objects"] as? [String: [String: Any]],
+              let rootID = plist["rootObject"] as? String,
+              let project = objects[rootID], project["isa"] as? String == "PBXProject",
+              let targets = project["targets"] as? [String], targets.count == 1,
+              let target = objects[targets[0]], target["isa"] as? String == "PBXNativeTarget",
+              target["name"] as? String == "DmIOS",
+              target["productType"] as? String == "com.apple.product-type.application",
+              let listID = target["buildConfigurationList"] as? String,
+              let list = objects[listID], list["isa"] as? String == "XCConfigurationList",
+              let configurationIDs = list["buildConfigurations"] as? [String] else { return nil }
+        let releases = configurationIDs.compactMap { objects[$0] }.filter {
+            $0["isa"] as? String == "XCBuildConfiguration" && $0["name"] as? String == "Release"
+        }
+        guard releases.count == 1,
+              let settings = releases[0]["buildSettings"] as? [String: Any],
+              let identifier = settings["PRODUCT_BUNDLE_IDENTIFIER"] as? String,
+              identifier.range(of: "^org\\.nxnative\\.[0-9a-f]{16}$", options: .regularExpression) != nil,
+              settings["INFOPLIST_FILE"] as? String == "Gen/Info.plist" else { return nil }
+        let infoURL = projectURL.deletingLastPathComponent().appendingPathComponent("Gen/Info.plist")
+        guard let infoData = try? Data(contentsOf: infoURL),
+              let info = try? PropertyListSerialization.propertyList(from: infoData, options: [], format: nil) as? [String: Any],
+              info["CFBundleIdentifier"] as? String == "$(PRODUCT_BUNDLE_IDENTIFIER)" else { return nil }
+        let titleID = identifier.dropFirst("org.nxnative.".count)
+        return "org.nxnative.\(teamID.lowercased()).\(titleID)"
     }
 
     /// `--prepare-xcode` names schemes after the game and title ID, not the DmIOS target.
