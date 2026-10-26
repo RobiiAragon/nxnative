@@ -21,6 +21,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Pairing:** control sections are shared between programs, so pair by entry, never by searching for code near a control.
 - **Found on:** [Super Mario 3D World + Bowser's Fury](../../dm/games/010028600EBDA000/README.md) (BAHS version 9).
 
+### BAHS intermediate stages are not direct pipeline pairs
+
+- **Symptom:** offline pipeline packing fails in `metal-tt` with `Fragment input(s) user(locn0),user(locn1),user(locn2) mismatching vertex shader output type(s) or not written by vertex shader`; the device prebuild reports the same pair as a failed base.
+- **Cause:** `bahs_variations` paired the vertex and fragment binaries of every BAHS program while ignoring its other stage records. A program containing a geometry or tessellation stage has no direct vertex-to-fragment interface: that intermediate stage supplies the fragment inputs. Its vertex/fragment keys alone describe a different, invalid pipeline.
+- **Fix:** the reader makes direct prebuild pairs only for programs whose binary records contain vertex and fragment stages exclusively. It checks every record, including stages it cannot extract, and still extracts the individual shaders. This changes only `pso_pairs.tsv`, which neither vertex padding nor the shader-library input digest consumes. Regenerate that table from the game files and rebuild the offline archive; the shader translation chain and existing libraries are unchanged.
+- **Found on:** [Mario Kart 8 Deluxe](../../dm/games/0100152000022000/README.md#update-305-validation), update 3.0.5: agl's `velocity_line_blur` program contains vertex, fragment and geometry binaries.
+- **Check:** `DM_GAME=0100152000022000 python3 dm/gfx/tests/test_bahs_pairs.py` checks direct variations, geometry/tessellation/unknown stages, an unextracted intermediate stage, and unaffected neighboring programs with synthetic tables.
+
 ### Zstd files recognised by their magic
 
 - **Symptom:** `shader_split.py` finds 0 shaders in a RomFS of zstd files named `.zst`.
